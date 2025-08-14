@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Arduino → Texto & Braille (Web Serial)</title>
+  <style>
+    :root { --bg:#0b0c10; --panel:#ffffff; --muted:#6b7280; --ink:#111827; --accent:#111; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji"; background:#f3f4f6; color:#111827; }
+    header { display:flex; gap:1rem; align-items:center; justify-content:space-between; padding:16px; max-width:1000px; margin:0 auto; }
+    h1 { font-size: clamp(1.25rem, 1rem + 1.5vw, 2rem); margin:0; }
+    main { max-width:1000px; margin:0 auto; padding:16px; display:grid; grid-template-columns: 1fr; gap:16px; }
+    @media (min-width:960px){ main{ grid-template-columns: 1.2fr 1fr; } }
+    .card { background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:16px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
+    .row { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+    button, select, input { font:inherit; }
+    button { padding:10px 14px; border-radius:12px; border:1px solid #111; background:#111; color:#fff; cursor:pointer; }
+    button.secondary { background:#fff; color:#111; border:1px solid #111; }
+    button.ghost { background:#fff; color:#111; border:1px dashed #cbd5e1; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    label { font-size:.9rem; color:#374151; }
+    .muted { color:#6b7280; font-size:.9rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .output { min-height: 120px; font-size:1.25rem; line-height:1.8; word-wrap:break-word; }
+    .braille { font-size: 2rem; line-height:1.8; }
+    .log { background:#0b1020; color:#e5e7eb; padding:12px; border-radius:12px; min-height:200px; max-height:320px; overflow:auto; }
+    .pill { display:inline-flex; align-items:center; gap:.5rem; padding:6px 10px; border:1px solid #e5e7eb; border-radius:999px; background:#fff; }
+    .hint { font-size:.85rem; color:#6b7280; }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Arduino → Texto & Braille (Web Serial)</h1>
+    <div class="row">
+      <button id="btnConnect">Conectar</button>
+      <button id="btnDisconnect" class="secondary" disabled>Desconectar</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="row" style="justify-content:space-between; align-items:flex-end;">
+        <div>
+          <label for="baud">Baudios</label><br>
+          <select id="baud">
+            <option value="9600" selected>9600</option>
+            <option value="19200">19200</option>
+            <option value="38400">38400</option>
+            <option value="57600">57600</option>
+            <option value="115200">115200</option>
+          </select>
+        </div>
+        <div class="row">
+          <button id="btnClear" class="ghost">Limpiar</button>
+          <button id="btnCopy" class="ghost">Copiar texto</button>
+          <button id="btnSpace" class="ghost">Espacio</button>
+          <button id="btnBack" class="ghost">← Borrar</button>
+          <button id="btnDownload" class="ghost">Descargar .txt</button>
+        </div>
+      </div>
+
+      <h3>Texto recibido</h3>
+      <div id="textOut" class="card output" style="border:none; padding:12px;">(esperando…)</div>
+
+      <h3>Braille</h3>
+      <div id="brailleOut" class="card braille" style="border:none; padding:12px;">⠀</div>
+
+      <p class="hint">Consejo: tu sketch debe enviar <span class="mono">Serial.print</span> de cada letra cuando confirmes la combinación. Evita imprimir menús o depuración mientras recibes texto.</p>
+    </section>
+
+    <section class="card">
+      <h3>Registro Serial</h3>
+      <pre id="log" class="log mono"></pre>
+      <p class="muted">Compatible con <strong>Chrome/Edge</strong> 89+ mediante Web Serial, bajo HTTPS. GitHub Pages ya usa HTTPS. Firefox y Safari aún no lo soportan.</p>
+    </section>
+  </main>
+
+  <script>
+  const BRAILLE_MAP = { a:"\u2801",b:"\u2803",c:"\u2809",d:"\u2819",e:"\u2811",f:"\u280B",g:"\u281B",h:"\u2813",i:"\u280A",j:"\u281A",k:"\u2805",l:"\u2807",m:"\u280D",n:"\u281D",o:"\u2815",p:"\u280F",q:"\u281F",r:"\u2817",s:"\u280E",t:"\u281E",u:"\u2825",v:"\u2827",w:"\u283A",x:"\u282D",y:"\u283D",z:"\u2835",' ' :"\u2800" };
+  const CAPITAL = "\u2820";
+  function toBraille(text) {
+    let out = "";
+    for (const ch of text) {
+      if (/[A-ZÁÉÍÓÚÑÜ]/.test(ch)) { out += CAPITAL; }
+      const base = normalizeBase(ch.toLowerCase());
+      out += BRAILLE_MAP[base] || ch;
+    }
+    return out;
+  }
+  function normalizeBase(ch){
+    return ch.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace('ñ','n').replace('ü','u');
+  }
+
+  // === AGREGADO: función de voz ===
+  function speak(text) {
+    if (!text) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "es-ES";
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    speechSynthesis.speak(utterance);
+  }
+
+  const ui = {
+    btnConnect: document.getElementById('btnConnect'),
+    btnDisconnect: document.getElementById('btnDisconnect'),
+    baud: document.getElementById('baud'),
+    textOut: document.getElementById('textOut'),
+    brailleOut: document.getElementById('brailleOut'),
+    log: document.getElementById('log'),
+    btnClear: document.getElementById('btnClear'),
+    btnCopy: document.getElementById('btnCopy'),
+    btnSpace: document.getElementById('btnSpace'),
+    btnBack: document.getElementById('btnBack'),
+    btnDownload: document.getElementById('btnDownload'),
+  };
+
+  let port = null;
+  let reader = null;
+  let reading = false;
+  let bufferText = '';
+
+  function setConnectedState(connected){
+    ui.btnConnect.disabled = connected;
+    ui.btnDisconnect.disabled = !connected;
+  }
+
+  function appendLog(line){
+    ui.log.textContent += line + "\n";
+    ui.log.scrollTop = ui.log.scrollHeight;
+  }
+
+  function renderOutputs(){
+    ui.textOut.textContent = bufferText || '(vacío)';
+    ui.brailleOut.textContent = toBraille(bufferText || ' ');
+  }
+
+  async function connect(){
+    try {
+      if (!('serial' in navigator)) {
+        alert('Tu navegador no soporta Web Serial. Usa Chrome/Edge 89+');
+        return;
+      }
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: Number(ui.baud.value) || 9600 });
+      const decoder = new TextDecoderStream();
+      const readableStreamClosed = port.readable.pipeTo(decoder.writable);
+      reader = decoder.readable.getReader();
+      setConnectedState(true);
+      appendLog('Conectado. Leyendo…');
+      reading = true;
+      while (reading) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) handleChunk(value);
+      }
+    } catch (err) {
+      console.error(err);
+      appendLog('Error: ' + err);
+      await disconnect();
+    }
+  }
+
+  function handleChunk(value){
+    appendLog('RX: ' + JSON.stringify(value));
+    if (value.includes('Frase completa:')) {
+      const frase = value.split(':').slice(1).join(':').trim();
+      bufferText = frase;
+      renderOutputs();
+      speak(frase); // AGREGADO: voz al confirmar palabra
+      return;
+    }
+    for (const ch of value) {
+      if (ch === '\r' || ch === '\n') continue;
+      if (/^[A-Za-z ]$/.test(ch)) {
+        bufferText += ch;
+      }
+    }
+    renderOutputs();
+  }
+
+  async function disconnect(){
+    try {
+      reading = false;
+      if (reader) { await reader.cancel(); reader.releaseLock(); }
+      if (port) { await port.close(); }
+    } catch (e) { console.warn(e); }
+    finally {
+      setConnectedState(false);
+      appendLog('Desconectado.');
+      port = null; reader = null;
+    }
+  }
+
+  ui.btnConnect.addEventListener('click', connect);
+  ui.btnDisconnect.addEventListener('click', disconnect);
+  ui.btnClear.addEventListener('click', ()=>{ bufferText=''; renderOutputs(); });
+  ui.btnCopy.addEventListener('click', async()=>{ try { await navigator.clipboard.writeText(bufferText); } catch {} });
+  ui.btnSpace.addEventListener('click', ()=>{ bufferText += ' '; renderOutputs(); });
+  ui.btnBack.addEventListener('click', ()=>{ bufferText = bufferText.slice(0,-1); renderOutputs(); });
+  ui.btnDownload.addEventListener('click', ()=>{
+    const blob = new Blob([bufferText], {type:'text/plain'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'braille-texto.txt'; a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  navigator.serial && navigator.serial.addEventListener('disconnect', () => {
+    appendLog('Evento: dispositivo desconectado');
+    disconnect();
+  });
+
+  renderOutputs();
+  </script>
+</body>
+</html>
